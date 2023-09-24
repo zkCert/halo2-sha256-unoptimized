@@ -1,5 +1,5 @@
 [package]
-name = "halo2-sha256"
+name = "halo2-sha256-unoptimized"
 version = "0.1.0"
 edition = "2021"
 
