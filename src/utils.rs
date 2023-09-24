@@ -238,7 +238,7 @@ pub fn shr<F: ScalarField>(
     debug_assert_eq!(x_bits.len(), 32);
     // TODO: Underconstrained
     let zero = ctx.load_zero();
-    let test: Vec<AssignedValue<F>> = (0..32)
+    (0..32)
         .map(|idx| {
             // TODO: underconstrained
             if idx + n >= 32 {
@@ -247,10 +247,7 @@ pub fn shr<F: ScalarField>(
                 x_bits[idx + n].clone()
             }
         })
-        .collect_vec();
-
-    println!("{:?}", test.len());
-    test
+        .collect_vec()
 }
 
 fn maj<F: ScalarField>(
