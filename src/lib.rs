@@ -17,19 +17,19 @@ pub struct AssignedHashResult<F: ScalarField> {
 }
 
 #[derive(Debug, Clone)]
-pub struct Sha256Chip<'range, F: ScalarField> {
+pub struct Sha256Chip<F: ScalarField> {
     pub max_byte_sizes: Vec<usize>,
-    pub range: &'range RangeChip<F>,
+    pub range: RangeChip<F>,
     pub cur_hash_idx: usize,
     pub is_input_range_check: bool,
 }
 
-impl<'range, F: ScalarField> Sha256Chip<'range, F> {
+impl<F: ScalarField> Sha256Chip<F> {
     // 64 bytes = 512 bits
     const ONE_ROUND_INPUT_BYTES: usize = 64;
     pub fn construct(
         max_byte_sizes: Vec<usize>,
-        range: &'range RangeChip<F>,
+        range: RangeChip<F>,
         is_input_range_check: bool,
     ) -> Self {
         for byte in max_byte_sizes.iter() {
@@ -89,7 +89,7 @@ impl<'range, F: ScalarField> Sha256Chip<'range, F> {
         }
         assert_eq!(padded_inputs.len(), max_byte_size);
 
-        let range = self.range;
+        let range = self.range.clone();
         let gate = range.gate();
 
         let assigned_input_byte_size =
@@ -230,7 +230,7 @@ mod test {
         let max_byte_sizes = vec![64];
         base_test().k(k as u32).lookup_bits(k - 1).run(|ctx, range| {
             let range = range.clone();
-            let mut chip = Sha256Chip::construct(max_byte_sizes, &range, true);
+            let mut chip = Sha256Chip::construct(max_byte_sizes, range, true);
 
             let outputs = chip.digest(ctx, &test_input).unwrap();
             assert_eq!(&Fr::from(test_input.len() as u64), outputs.input_len.value());
@@ -254,7 +254,7 @@ mod test {
         let max_byte_sizes = vec![64];
         base_test().k(k as u32).lookup_bits(k - 1).run(|ctx, range| {
             let range = range.clone();
-            let mut chip = Sha256Chip::construct(max_byte_sizes, &range, true);
+            let mut chip = Sha256Chip::construct(max_byte_sizes, range, true);
 
             let outputs = chip.digest(ctx, &test_input).unwrap();
             assert_eq!(&Fr::from(test_input.len() as u64), outputs.input_len.value());
@@ -278,7 +278,7 @@ mod test {
         let max_byte_sizes = vec![128];
         base_test().k(k as u32).lookup_bits(k - 1).run(|ctx, range| {
             let range = range.clone();
-            let mut chip = Sha256Chip::construct(max_byte_sizes, &range, true);
+            let mut chip = Sha256Chip::construct(max_byte_sizes, range, true);
 
             let outputs = chip.digest(ctx, &test_input).unwrap();
             assert_eq!(&Fr::from(test_input.len() as u64), outputs.input_len.value());
@@ -306,7 +306,7 @@ mod test {
 
         base_test().k(k as u32).lookup_bits(k - 1).run(|ctx, range| {
             let range = range.clone();
-            let mut chip = Sha256Chip::construct(max_byte_sizes, &range, true);
+            let mut chip = Sha256Chip::construct(max_byte_sizes, range, true);
 
             let outputs = chip.digest(ctx, &test_input).unwrap();
             assert_eq!(&Fr::from(test_input.len() as u64), outputs.input_len.value());
