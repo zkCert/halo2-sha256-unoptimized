@@ -1,4 +1,5 @@
 use halo2_base::QuantumCell::Constant;
+use halo2_base::halo2_proofs::dev::metadata::Gate;
 use halo2_base::{
     gates::{GateInstructions, GateChip, RangeChip, RangeInstructions},
     utils::ScalarField,
@@ -23,6 +24,21 @@ pub const INIT_HASH_VALUES: [u32; NUM_HASH_VALUES] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
     0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
 ];
+
+
+fn xor<F: ScalarField>(
+    gate: &GateChip<F>,
+    ctx: &mut Context<F>,
+    a: AssignedValue<F>,
+    b: AssignedValue<F>,
+) -> AssignedValue<F> {
+    let or_ab = gate.or(ctx, a, b);
+    let and_ab = gate.and(ctx, a, b);
+    let not_and_ab = gate.not(ctx, and_ab);
+    gate.and(ctx, or_ab, not_and_ab)
+}
+
+
 
 pub fn sha256_compression<F: ScalarField>(
     ctx: &mut Context<F>,
@@ -322,12 +338,14 @@ pub fn sigma0<F: ScalarField> (
         .zip(rotr_18.iter())
         .zip(shr_3.iter())
         .map(|((x, y), z)| {
-            let a = gate.xor(
+            let a = xor(
+                gate,
                 ctx, 
                 *x, 
                 *y
             );
-            gate.xor(
+            xor(
+                gate,
                 ctx, 
                 a, 
                 *z
@@ -371,12 +389,14 @@ pub fn sigma1<F: ScalarField> (
         .zip(rotr_19.iter())
         .zip(shr_10.iter())
         .map(|((x, y), z)| {
-            let a = gate.xor(
+            let a = xor(
+                gate,
                 ctx, 
                 *x, 
                 *y
             );
-            gate.xor(
+            xor(
+                gate,
                 ctx, 
                 a, 
                 *z
@@ -420,12 +440,14 @@ pub fn usigma0<F: ScalarField> (
         .zip(rotr_13.iter())
         .zip(rotr_22.iter())
         .map(|((x, y), z)| {
-            let a = gate.xor(
+            let a = xor(
+                gate,
                 ctx, 
                 *x, 
                 *y
             );
-            gate.xor(
+            xor(
+                gate,
                 ctx, 
                 a, 
                 *z
@@ -468,12 +490,14 @@ pub fn usigma1<F: ScalarField> (
         .zip(rotr_11.iter())
         .zip(rotr_25.iter())
         .map(|((x, y), z)| {
-            let a = gate.xor(
+            let a = xor(
+                gate,
                 ctx, 
                 *x, 
                 *y
             );
-            gate.xor(
+            xor(
+                gate,
                 ctx, 
                 a, 
                 *z
