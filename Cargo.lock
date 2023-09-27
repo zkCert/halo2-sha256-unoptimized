@@ -538,6 +538,7 @@ dependencies = [
  "console_error_panic_hook",
  "criterion",
  "env_logger",
+ "generic-array",
  "getrandom",
  "halo2-base",
  "hex",

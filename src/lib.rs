@@ -7,6 +7,8 @@ use halo2_base::{
     utils::ScalarField,
     AssignedValue, Context,
 };
+use generic_array::GenericArray;
+use sha2::compress256;
 use itertools::Itertools;
 
 #[derive(Debug, Clone)]
@@ -47,55 +49,59 @@ impl<F: ScalarField> Sha256Chip<F> {
         &mut self,
         ctx: &mut Context<F>,
         input: &[u8],
+        precomputed_input_len: Option<usize>,
     ) -> Result<AssignedHashResult<F>, Error> {
-        // Preprocessing adapted from SHA256 implementation
-        // https://github.com/zkemail/halo2-dynamic-sha256/blob/feat/main_gate_base/src/lib.rs
         let input_byte_size = input.len();
-        // Need to reserve 1 byte for a ONE bit and 8 bytes for the input length
-        let input_byte_size_cutoff = input_byte_size + 9;
+        let input_byte_size_with_9 = input_byte_size + 9;
         let one_round_size = Self::ONE_ROUND_INPUT_BYTES;
-        let num_round = if input_byte_size_cutoff % one_round_size == 0 {
-            input_byte_size_cutoff / one_round_size
+        let num_round = if input_byte_size_with_9 % one_round_size == 0 {
+            input_byte_size_with_9 / one_round_size
         } else {
-            input_byte_size_cutoff / one_round_size + 1
+            input_byte_size_with_9 / one_round_size + 1
         };
         let padded_size = one_round_size * num_round;
-        let max_byte_size = self.max_byte_sizes[self.cur_hash_idx];
-        let max_round = max_byte_size / one_round_size;
-        assert!(padded_size <= max_byte_size);
-        let zero_padding_byte_size = padded_size - input_byte_size_cutoff;
-        let remaining_byte_size = max_byte_size - padded_size;
+        let max_variable_byte_size = self.max_byte_sizes[self.cur_hash_idx];
+        let max_variable_round = max_variable_byte_size / one_round_size;
+        let precomputed_input_len = precomputed_input_len.unwrap_or(0);
+        assert_eq!(precomputed_input_len % one_round_size, 0);
+        assert!(padded_size - precomputed_input_len <= max_variable_byte_size);
+        let zero_padding_byte_size = padded_size - input_byte_size_with_9;
+        let remaining_byte_size = max_variable_byte_size + precomputed_input_len - padded_size;
+        let precomputed_round = precomputed_input_len / one_round_size;
         assert_eq!(
             remaining_byte_size,
-            one_round_size * (max_round - num_round)
+            one_round_size * (max_variable_round + precomputed_round - num_round)
         );
         let mut padded_inputs = input.to_vec();
-        // Since padded_inputs operates in bytes, we push 10000000 as the first value in padding
         padded_inputs.push(0x80);
         for _ in 0..zero_padding_byte_size {
             padded_inputs.push(0);
         }
-        
-        // Push the input length (converted into bytes)
         let mut input_len_bytes = [0; 8];
         let le_size_bytes = (8 * input_byte_size).to_le_bytes();
         input_len_bytes[0..le_size_bytes.len()].copy_from_slice(&le_size_bytes);
         for byte in input_len_bytes.iter().rev() {
             padded_inputs.push(*byte);
         }
+
         assert_eq!(padded_inputs.len(), num_round * one_round_size);
         for _ in 0..remaining_byte_size {
             padded_inputs.push(0);
         }
-        assert_eq!(padded_inputs.len(), max_byte_size);
+        assert_eq!(
+            padded_inputs.len(),
+            max_variable_byte_size + precomputed_input_len
+        );
+        // for (idx, byte) in padded_inputs.iter().enumerate() {
+        //     println!("idx {} byte {}", idx, byte);
+        // }
 
         let range = self.range.clone();
         let gate = range.gate();
-
         let assigned_input_byte_size =
             ctx.load_witness(F::from(input_byte_size as u64));
         let assigned_num_round = ctx.load_witness(F::from(num_round as u64));
-        let padded_size = gate.mul(
+        let assigned_padded_size = gate.mul(
             ctx,
             assigned_num_round,
             Constant(F::from(one_round_size as u64)),
@@ -107,19 +113,38 @@ impl<F: ScalarField> Sha256Chip<F> {
         );
         let padding_size = gate.sub(
             ctx,
-            padded_size,
+            assigned_padded_size,
             assigned_input_with_9_size,
         );
         let padding_is_less_than_round =
             range.is_less_than_safe(ctx, padding_size, one_round_size as u64);
         gate.assert_is_const(ctx, &padding_is_less_than_round, &F::from(1));
+        let assigned_precomputed_round =
+            ctx.load_witness(F::from(precomputed_round as u64));
+        let assigned_target_round = gate.sub(
+            ctx,
+            assigned_num_round,
+            assigned_precomputed_round,
+        );
 
-        let mut assigned_last_hs_vec = vec![
-            INIT_HASH_VALUES
+        // compute an initial state from the precomputed_input.
+        let precomputed_input = &padded_inputs[0..precomputed_input_len];
+        let mut last_state = INIT_HASH_VALUES;
+        let precomputed_blocks = precomputed_input
+            .chunks(one_round_size)
+            .map(|bytes| GenericArray::clone_from_slice(bytes))
+            .collect_vec();
+        compress256(&mut last_state, &precomputed_blocks[..]);
+
+        let mut assigned_last_state_vec = vec![last_state
             .iter()
-            .map(|h| ctx.load_constant(F::from(*h as u64)))
-            .collect::<Vec<AssignedValue<F>>>()];
-        let assigned_input_bytes = padded_inputs
+            .map(|state| ctx.load_witness(F::from(*state as u64)))
+            .collect_vec()];
+        // vec![INIT_HASH_VALUES
+        //     .iter()
+        //     .map(|h| gate.load_constant(ctx, F::from(*h as u64)))
+        //     .collect::<Vec<AssignedValue<F>>>()];
+        let assigned_input_bytes = padded_inputs[precomputed_input_len..]
             .iter()
             .map(|byte| ctx.load_witness(F::from(*byte as u64)))
             .collect::<Vec<AssignedValue<F>>>();
@@ -129,32 +154,32 @@ impl<F: ScalarField> Sha256Chip<F> {
             }
         }
         let mut num_processed_input = 0;
-        while num_processed_input < max_byte_size {
+        while num_processed_input < max_variable_byte_size {
             let assigned_input_word_at_round =
                 &assigned_input_bytes[num_processed_input..(num_processed_input + one_round_size)];
             let new_assigned_hs_out = sha256_compression(
                 ctx,
                 &range,
                 assigned_input_word_at_round,
-                &assigned_last_hs_vec.last().unwrap(),
+                &assigned_last_state_vec.last().unwrap(),
             );
- 
-            assigned_last_hs_vec.push(new_assigned_hs_out);
+
+            assigned_last_state_vec.push(new_assigned_hs_out);
             num_processed_input += one_round_size;
         }
 
         let zero = ctx.load_zero();
         let mut output_h_out = vec![zero; 8];
-        for (n_round, assigned_h_out) in assigned_last_hs_vec.into_iter().enumerate() {
+        for (n_round, assigned_state) in assigned_last_state_vec.into_iter().enumerate() {
             let selector = gate.is_equal(
                 ctx,
                 Constant(F::from(n_round as u64)),
-                assigned_num_round,
+                assigned_target_round,
             );
             for i in 0..8 {
                 output_h_out[i] = gate.select(
                     ctx,
-                    assigned_h_out[i],
+                    assigned_state[i],
                     output_h_out[i],
                     selector,
                 )
@@ -168,9 +193,7 @@ impl<F: ScalarField> Sha256Chip<F> {
                     .get_lower_32().to_be_bytes().to_vec();
                 let assigned_bytes = (0..4)
                     .map(|idx| {
-                        let be_bytes_f = be_bytes.iter().map(|vs| F::from(*vs as u64)).collect_vec();
-                        let assigned = ctx
-                            .load_witness(be_bytes_f[idx]);
+                        let assigned = ctx.load_witness(F::from(be_bytes[idx] as u64));
                         range.range_check(ctx, assigned, 8);
                         assigned
                     })
@@ -184,10 +207,9 @@ impl<F: ScalarField> Sha256Chip<F> {
                         sum,
                     );
                 }
-                gate.is_equal(
-                    ctx,
-                    assigned_word,
-                    sum,
+                ctx.constrain_equal(
+                    &assigned_word,
+                    &sum,
                 );
                 assigned_bytes
             })
@@ -232,7 +254,7 @@ mod test {
             let range = range.clone();
             let mut chip = Sha256Chip::construct(max_byte_sizes, range, true);
 
-            let outputs = chip.digest(ctx, &test_input).unwrap();
+            let outputs = chip.digest(ctx, &test_input, Some(0)).unwrap();
             assert_eq!(&Fr::from(test_input.len() as u64), outputs.input_len.value());
             for i in 0..32 {
                 assert_eq!(&Fr::from(test_output[i] as u64), outputs.output_bytes[i].value());
@@ -256,7 +278,7 @@ mod test {
             let range = range.clone();
             let mut chip = Sha256Chip::construct(max_byte_sizes, range, true);
 
-            let outputs = chip.digest(ctx, &test_input).unwrap();
+            let outputs = chip.digest(ctx, &test_input, Some(0)).unwrap();
             assert_eq!(&Fr::from(test_input.len() as u64), outputs.input_len.value());
             for i in 0..32 {
                 assert_eq!(&Fr::from(test_output[i] as u64), outputs.output_bytes[i].value());
@@ -280,7 +302,7 @@ mod test {
             let range = range.clone();
             let mut chip = Sha256Chip::construct(max_byte_sizes, range, true);
 
-            let outputs = chip.digest(ctx, &test_input).unwrap();
+            let outputs = chip.digest(ctx, &test_input, Some(0)).unwrap();
             assert_eq!(&Fr::from(test_input.len() as u64), outputs.input_len.value());
             for i in 0..32 {
                 assert_eq!(&Fr::from(test_output[i] as u64), outputs.output_bytes[i].value());
@@ -308,7 +330,7 @@ mod test {
             let range = range.clone();
             let mut chip = Sha256Chip::construct(max_byte_sizes, range, true);
 
-            let outputs = chip.digest(ctx, &test_input).unwrap();
+            let outputs = chip.digest(ctx, &test_input, Some(0)).unwrap();
             assert_eq!(&Fr::from(test_input.len() as u64), outputs.input_len.value());
             for i in 0..32 {
                 assert_eq!(&Fr::from(test_output[i] as u64), outputs.output_bytes[i].value());
